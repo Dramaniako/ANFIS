@@ -1,0 +1,36 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Streamlit local secrets
+.streamlit/secrets.toml
+
+# Environment, IDE & OS files
+.env
+.env.*
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+*.tmp
+
+# Exported / temporary prediction CSVs (keep primary dataset tracked)
+prediksi_ispu_anfis.csv
+!data/ispu_indonesia.csv
