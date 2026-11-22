@@ -56,7 +56,7 @@ class TestISPUStandardAndPreprocessing(unittest.TestCase):
         self.assertEqual(len(warns_extrap), 1)
 
     def test_dataset_exists_and_valid(self) -> None:
-        csv_path = PROJECT_ROOT / "data" / "ispu_indonesia.csv"
+        csv_path = PROJECT_ROOT / "data" / "ispu_dki_all.csv"
         self.assertTrue(csv_path.exists())
         df = pd.read_csv(csv_path)
         self.assertEqual(len(df), 1200)
@@ -64,7 +64,7 @@ class TestISPUStandardAndPreprocessing(unittest.TestCase):
         self.assertEqual(df["kategori"].nunique(), 5)
 
     def test_preprocessing_cleaning_and_scaler(self) -> None:
-        base_df = pd.read_csv(PROJECT_ROOT / "data" / "ispu_indonesia.csv").head(60).copy()
+        base_df = pd.read_csv(PROJECT_ROOT / "data" / "ispu_dki_all.csv").head(60).copy()
         base_df = base_df.astype({"pm10": object})
         base_df.loc[0, "pm10"] = "-"
         base_df.loc[1, "pm25"] = -12.0
@@ -132,7 +132,7 @@ class TestANFISEngine(unittest.TestCase):
                 self.assertLess(max_rel_err, 1e-4, msg=f"Gradien tidak cocok untuk ({ptype}, {mtype})")
 
     def test_anfis_hybrid_learning_on_ispu_dataset(self) -> None:
-        df = pd.read_csv(PROJECT_ROOT / "data" / "ispu_indonesia.csv")
+        df = pd.read_csv(PROJECT_ROOT / "data" / "ispu_dki_all.csv")
         split = prepare_train_test_data(df, POLLUTANT_ORDER, "ispu", test_size=0.2, random_state=42)
 
         lr = LinearRegression().fit(split["X_train"], split["y_train"])
@@ -163,7 +163,7 @@ class TestANFISEngine(unittest.TestCase):
             self.assertGreater(cls["accuracy"], 0.85)
 
     def test_forward_trace_exact_consistency(self) -> None:
-        df = pd.read_csv(PROJECT_ROOT / "data" / "ispu_indonesia.csv")
+        df = pd.read_csv(PROJECT_ROOT / "data" / "ispu_dki_all.csv")
         split = prepare_train_test_data(df, POLLUTANT_ORDER, "ispu", test_size=0.2, random_state=42)
         model = ANFIS(
             n_inputs=6,

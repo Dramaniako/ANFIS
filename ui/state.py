@@ -25,7 +25,7 @@ from src.ispu_standard import (
 )
 from src.preprocessing import prepare_train_test_data, validate_and_clean_dataframe
 
-DEFAULT_DATASET_PATH = Path(__file__).resolve().parents[1] / "data" / "ispu_indonesia.csv"
+DEFAULT_DATASET_PATH = Path(__file__).resolve().parents[1] / "data" / "ispu_dki_all.csv"
 
 
 def load_default_dataframe() -> pd.DataFrame:
@@ -142,7 +142,7 @@ def build_initial_bundle() -> dict[str, Any]:
         "df_raw": df_raw,
         "df_clean": df_clean,
         "clean_report": clean_report,
-        "data_source_name": "Dataset Bawaan (ispu_indonesia.csv)",
+        "data_source_name": "Dataset Bawaan (ispu_dki_all.csv)",
         **trained,
     }
 

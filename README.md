@@ -22,6 +22,7 @@ ANFIS/
 ├── requirements.txt         # Daftar pustaka dan dependensi Python
 ├── README.md                # Dokumentasi proyek, teori, contoh manual, & panduan
 ├── data/
+│   ├── ispu_dki_all.csv     # Dataset observasi harian polusi DKI Jakarta
 │   └── ispu_indonesia.csv   # Dataset 1.200 observasi harian polusi udara (5 SPKU)
 ├── src/
 │   ├── __init__.py
