@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -270,3 +270,23 @@ def prepare_train_test_data(
         "feature_bounds": feature_bounds,
         "stratified": can_stratify,
     }
+
+
+def detect_input_mode(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    target_col: str,
+) -> Literal["sub_index", "concentration"]:
+    """Mendeteksi apakah kolom fitur sudah berupa sub-indeks ISPU atau konsentrasi mentah."""
+    if df is None or df.empty or not feature_cols:
+        return "concentration"
+
+    row_max = df[feature_cols].max(axis=1)
+    median_diff = float((df[target_col] - row_max).abs().median())
+
+    co_col = next((c for c in feature_cols if c.strip().lower() == "co"), None)
+    co_small = True if co_col is None else float(df[co_col].quantile(0.95)) <= 500.0
+
+    if median_diff <= 5.0 and co_small:
+        return "sub_index"
+    return "concentration"

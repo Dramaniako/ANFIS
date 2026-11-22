@@ -170,6 +170,25 @@ PRESET_SCENARIOS: dict[str, dict[str, Any]] = {
     },
 }
 
+PRESET_SCENARIOS_SUBINDEX: dict[str, dict[str, Any]] = {
+    "Pagi Cerah / Udara Bersih": {
+        "description": "Kondisi pagi hari Jakarta dengan seluruh sub-indeks polutan di bawah 50 (target kategori Baik).",
+        "values": {"pm10": 26.0, "pm25": 38.0, "so2": 22.0, "co": 9.0, "o3": 24.0, "no2": 12.0},
+    },
+    "Jam Sibuk Perkotaan": {
+        "description": "Kondisi lalu lintas harian Jakarta dengan dominasi PM2.5 pada rentang Sedang (51–100).",
+        "values": {"pm10": 55.0, "pm25": 84.0, "so2": 41.0, "co": 15.0, "o3": 36.0, "no2": 24.0},
+    },
+    "Polusi Tinggi Perkotaan": {
+        "description": "Episode pencemaran perkotaan dengan sub-indeks PM2.5 dan O3 pada kategori Tidak Sehat (101–200).",
+        "values": {"pm10": 92.0, "pm25": 148.0, "so2": 58.0, "co": 28.0, "o3": 112.0, "no2": 48.0},
+    },
+    "Polusi Ekstrem / Kabut Asap": {
+        "description": "Episode pencemaran berat Jakarta dengan sub-indeks di atas 200 (target Sangat Tidak Sehat).",
+        "values": {"pm10": 145.0, "pm25": 225.0, "so2": 78.0, "co": 42.0, "o3": 155.0, "no2": 85.0},
+    },
+}
+
 
 def compute_sub_index(value: float, pollutant: str) -> float:
     """Menghitung sub-indeks ISPU untuk satu parameter polutan sesuai Permen LHK No. 14/2020.
@@ -216,13 +235,8 @@ def classify_ispu(score: float) -> dict[str, Any]:
     return dict(ISPU_CATEGORIES[4])
 
 
-def compute_ispu_official(values: dict[str, float]) -> dict[str, Any]:
-    """Menghitung nilai ISPU resmi (maksimum sub-indeks), kategori, dan polutan kritis."""
-    sub_indices: dict[str, float] = {}
-    for key in POLLUTANT_ORDER:
-        if key in values and values[key] is not None:
-            sub_indices[key] = compute_sub_index(float(values[key]), key)
-
+def _build_ispu_result(sub_indices: dict[str, float]) -> dict[str, Any]:
+    """Menyusun hasil ringkasan ISPU dari kamus nilai sub-indeks per polutan."""
     if not sub_indices:
         raise ValueError("Minimal satu parameter polutan resmi harus disediakan untuk menghitung ISPU.")
 
@@ -240,9 +254,28 @@ def compute_ispu_official(values: dict[str, float]) -> dict[str, Any]:
     }
 
 
+def compute_ispu_official(values: dict[str, float]) -> dict[str, Any]:
+    """Menghitung nilai ISPU resmi dari konsentrasi mentah (µg/m³) per polutan."""
+    sub_indices: dict[str, float] = {}
+    for key in POLLUTANT_ORDER:
+        if key in values and values[key] is not None:
+            sub_indices[key] = compute_sub_index(float(values[key]), key)
+    return _build_ispu_result(sub_indices)
+
+
+def compute_ispu_from_subindices(values: dict[str, float]) -> dict[str, Any]:
+    """Menghitung nilai ISPU resmi apabila masukan sudah berupa sub-indeks per polutan."""
+    sub_indices: dict[str, float] = {}
+    for key in POLLUTANT_ORDER:
+        if key in values and values[key] is not None:
+            sub_indices[key] = float(values[key])
+    return _build_ispu_result(sub_indices)
+
+
 def validate_manual_input(
     values: dict[str, Any],
     feature_bounds: dict[str, tuple[float, float]] | None = None,
+    input_mode: str = "concentration",
 ) -> tuple[list[str], list[str]]:
     """Memvalidasi masukan manual pengguna sebelum inferensi ANFIS.
 
@@ -252,10 +285,13 @@ def validate_manual_input(
     """
     errors: list[str] = []
     warnings: list[str] = []
+    is_subindex = input_mode == "sub_index"
 
     for col, raw_val in values.items():
         spec = POLLUTANT_SPECS.get(col.lower())
         label = spec["name"] if spec else col
+        unit = "Sub-Indeks ISPU" if is_subindex else (spec["unit"] if spec else "")
+        noun = "Sub-indeks" if is_subindex else "Konsentrasi"
 
         if raw_val is None or (isinstance(raw_val, str) and raw_val.strip() == ""):
             errors.append(f"Nilai {label} tidak boleh kosong.")
@@ -272,20 +308,19 @@ def validate_manual_input(
             continue
 
         if num < 0.0:
-            errors.append(f"Konsentrasi {label} tidak boleh bernilai negatif ({num:.2f}).")
+            errors.append(f"{noun} {label} tidak boleh bernilai negatif ({num:.2f}).")
             continue
 
-        if spec is not None and num > spec["max_physical"]:
+        max_ceiling = 1000.0 if is_subindex else (spec["max_physical"] if spec is not None else None)
+        if max_ceiling is not None and num > max_ceiling:
             errors.append(
-                f"Konsentrasi {label} ({num:.2f} {spec['unit']}) melebihi batas fisik wajar "
-                f"({spec['max_physical']:.0f} {spec['unit']})."
+                f"{noun} {label} ({num:.2f} {unit}) melebihi batas fisik wajar ({max_ceiling:.0f} {unit})."
             )
             continue
 
         if feature_bounds and col in feature_bounds:
             low, high = feature_bounds[col]
             if num < low or num > high:
-                unit = spec["unit"] if spec else ""
                 warnings.append(
                     f"Nilai {label} = {num:.2f} {unit} berada di luar rentang data latih "
                     f"[{low:.2f}, {high:.2f}] sehingga prediksi bersifat ekstrapolasi."

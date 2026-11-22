@@ -209,6 +209,7 @@ def render_page_training() -> None:
             feature_idx=chosen_feat_idx,
             scaler=active_split["scaler"],
             show_initial=show_init,
+            input_mode=st.session_state.get("input_mode", "concentration"),
         ),
         width="stretch",
     )

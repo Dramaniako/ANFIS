@@ -10,6 +10,7 @@ from src.ispu_standard import (
     POLLUTANT_ORDER,
     POLLUTANT_SPECS,
     PRESET_SCENARIOS,
+    PRESET_SCENARIOS_SUBINDEX,
 )
 from src.preprocessing import auto_map_columns, validate_and_clean_dataframe
 from src.visualization import plot_data_exploration_categories, plot_data_exploration_corr
@@ -17,8 +18,8 @@ from ui.state import apply_bundle_to_session, execute_training_pipeline, run_man
 from ui.styles import render_ispu_badge
 
 
-def _apply_preset_callback(preset_name: str, feature_cols: list[str]) -> None:
-    preset_vals = PRESET_SCENARIOS[preset_name]["values"]
+def _apply_preset_callback(preset_name: str, feature_cols: list[str], presets: dict) -> None:
+    preset_vals = presets[preset_name]["values"]
     for col in feature_cols:
         key_lower = col.lower()
         if key_lower in preset_vals:
@@ -137,6 +138,12 @@ def _render_dataset_tab() -> None:
                 st.error(f"Gagal membaca file CSV: {exc}")
 
     st.subheader("2. Ringkasan Dataset Aktif")
+    if st.session_state.get("input_mode") == "sub_index":
+        st.info(
+            "Dataset aktif terdeteksi menggunakan skala **Sub-Indeks ISPU** per polutan "
+            "(seperti data SPKU Satu Data DKI Jakarta di mana `max` merupakan nilai sub-indeks tertinggi). "
+            "Baris historis pra-2021 tanpa pengukuran `PM2.5` dibersihkan agar seluruh data latih lengkap dan autentik."
+        )
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Sumber Data", st.session_state.get("data_source_name", "Bawaan").split("(")[0].strip())
     m2.metric("Baris Bersih", f"{clean_report['clean_rows']:,}", f"Dibuang: {clean_report['dropped_rows']}")
@@ -185,46 +192,62 @@ def _render_dataset_tab() -> None:
 
 def _render_manual_tab() -> None:
     split_data = st.session_state["split_data"]
+    input_mode: str = st.session_state.get("input_mode", "concentration")
+    is_subindex = input_mode == "sub_index"
     feature_cols: list[str] = split_data["feature_cols"]
     feature_bounds: dict[str, tuple[float, float]] = split_data["feature_bounds"]
     manual_defaults: dict[str, float] = st.session_state.get("manual_inputs", {})
 
+    active_presets = PRESET_SCENARIOS_SUBINDEX if is_subindex else PRESET_SCENARIOS
     st.subheader("Uji Prediksi Kualitas Udara Secara Manual")
-    st.markdown(
-        "Masukkan konsentrasi tiap polutan udara atau klik salah satu **Skenario Preset** "
-        "untuk mengisi angka contoh secara otomatis."
-    )
+    if is_subindex:
+        st.markdown(
+            "Masukkan nilai **Sub-Indeks ISPU** tiap polutan sesuai skala dataset aktif, atau klik salah satu "
+            "**Skenario Preset** untuk mengisi angka contoh secara otomatis."
+        )
+    else:
+        st.markdown(
+            "Masukkan konsentrasi tiap polutan udara atau klik salah satu **Skenario Preset** "
+            "untuk mengisi angka contoh secara otomatis."
+        )
 
     # Tombol Skenario Preset
-    preset_cols = st.columns(len(PRESET_SCENARIOS))
-    for col_ui, (pname, pinfo) in zip(preset_cols, PRESET_SCENARIOS.items()):
+    preset_cols = st.columns(len(active_presets))
+    for col_ui, (pname, pinfo) in zip(preset_cols, active_presets.items()):
         with col_ui:
             st.button(
                 pname,
                 help=pinfo["description"],
                 on_click=_apply_preset_callback,
-                args=(pname, feature_cols),
+                args=(pname, feature_cols, active_presets),
                 width="stretch",
             )
 
-    st.markdown("#### Masukkan Nilai Konsentrasi Polutan")
+    st.markdown("#### Masukkan Nilai Sub-Indeks Polutan" if is_subindex else "#### Masukkan Nilai Konsentrasi Polutan")
     input_grid_cols = st.columns(3)
     collected_inputs: dict[str, float] = {}
 
     for idx, col in enumerate(feature_cols):
         spec = POLLUTANT_SPECS.get(col.lower())
         low_b, high_b = feature_bounds[col]
-        default_val = float(manual_defaults.get(col, spec["default_value"] if spec else (low_b + high_b) / 2.0))
+        fallback_val = (
+            round((low_b + high_b) / 2.0, 1)
+            if (is_subindex or spec is None)
+            else float(spec["default_value"])
+        )
+        default_val = float(manual_defaults.get(col, fallback_val))
         field_key = f"manual_field_{col}"
         if field_key not in st.session_state:
             st.session_state[field_key] = default_val
 
-        label = f"{spec['name']} ({spec['unit']})" if spec else col
-        help_txt = (
-            f"{spec['description']} Rentang data latih: [{low_b:.1f}, {high_b:.1f}] {spec['unit']}."
-            if spec
-            else f"Rentang data latih: [{low_b:.2f}, {high_b:.2f}]"
-        )
+        unit_label = "Sub-Indeks ISPU" if is_subindex else (spec["unit"] if spec else "")
+        name_label = spec["name"] if spec else col
+        label = f"{name_label} ({unit_label})" if unit_label else name_label
+        if spec:
+            help_txt = f"{spec['description']} Rentang data latih: [{low_b:.1f}, {high_b:.1f}] {unit_label}."
+        else:
+            help_txt = f"Rentang data latih: [{low_b:.2f}, {high_b:.2f}]"
+
         with input_grid_cols[idx % 3]:
             # Tidak mengunci min_value=0 agar pesan validasi kesalahan input negatif dapat didemonstrasikan
             val = st.number_input(
@@ -257,15 +280,20 @@ def _render_manual_tab() -> None:
         with col_res2:
             if res.get("official") is not None:
                 off = res["official"]
+                metric_title = (
+                    "ISPU Analitis (Maksimum Sub-Indeks)"
+                    if is_subindex
+                    else "ISPU Analitis (Rumus Permen LHK 14/2020)"
+                )
                 st.metric(
-                    "ISPU Analitis (Rumus Permen LHK 14/2020)",
+                    metric_title,
                     f"{off['ispu']:.2f}",
                     f"Kategori: {off['kategori']} • Polutan Kritis: {off['polutan_kritis']}",
                 )
                 diff = res["pred_score"] - off["ispu"]
                 st.caption(
                     f"Selisih ANFIS terhadap rumus analitis murni: **{diff:+.2f} poin** "
-                    "(ANFIS juga memodelkan efek sinergis antarpolutan dari data historis)."
+                    "(ANFIS juga memodelkan pola interaksi antarpolutan dari data historis)."
                 )
             st.info(
                 "Untuk menelusuri perhitungan rinci **Layer 1 s.d. Layer 5** pada input ini, "

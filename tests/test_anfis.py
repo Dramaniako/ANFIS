@@ -16,9 +16,22 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.anfis import ANFIS
 from src.evaluation import compute_classification_metrics, compute_regression_metrics
-from src.ispu_standard import POLLUTANT_ORDER, classify_ispu, compute_ispu_official, compute_sub_index, validate_manual_input
+from src.ispu_standard import (
+    POLLUTANT_ORDER,
+    classify_ispu,
+    compute_ispu_from_subindices,
+    compute_ispu_official,
+    compute_sub_index,
+    validate_manual_input,
+)
 from src.manual_example import compute_worked_manual_example
-from src.preprocessing import MinMaxScalerCustom, prepare_train_test_data, validate_and_clean_dataframe
+from src.preprocessing import (
+    MinMaxScalerCustom,
+    auto_map_columns,
+    detect_input_mode,
+    prepare_train_test_data,
+    validate_and_clean_dataframe,
+)
 
 
 class TestISPUStandardAndPreprocessing(unittest.TestCase):
@@ -56,7 +69,7 @@ class TestISPUStandardAndPreprocessing(unittest.TestCase):
         self.assertEqual(len(warns_extrap), 1)
 
     def test_dataset_exists_and_valid(self) -> None:
-        csv_path = PROJECT_ROOT / "data" / "ispu_dki_all.csv"
+        csv_path = PROJECT_ROOT / "data" / "ispu_indonesia.csv"
         self.assertTrue(csv_path.exists())
         df = pd.read_csv(csv_path)
         self.assertEqual(len(df), 1200)
@@ -64,7 +77,7 @@ class TestISPUStandardAndPreprocessing(unittest.TestCase):
         self.assertEqual(df["kategori"].nunique(), 5)
 
     def test_preprocessing_cleaning_and_scaler(self) -> None:
-        base_df = pd.read_csv(PROJECT_ROOT / "data" / "ispu_dki_all.csv").head(60).copy()
+        base_df = pd.read_csv(PROJECT_ROOT / "data" / "ispu_indonesia.csv").head(60).copy()
         base_df = base_df.astype({"pm10": object})
         base_df.loc[0, "pm10"] = "-"
         base_df.loc[1, "pm25"] = -12.0
@@ -132,7 +145,7 @@ class TestANFISEngine(unittest.TestCase):
                 self.assertLess(max_rel_err, 1e-4, msg=f"Gradien tidak cocok untuk ({ptype}, {mtype})")
 
     def test_anfis_hybrid_learning_on_ispu_dataset(self) -> None:
-        df = pd.read_csv(PROJECT_ROOT / "data" / "ispu_dki_all.csv")
+        df = pd.read_csv(PROJECT_ROOT / "data" / "ispu_indonesia.csv")
         split = prepare_train_test_data(df, POLLUTANT_ORDER, "ispu", test_size=0.2, random_state=42)
 
         lr = LinearRegression().fit(split["X_train"], split["y_train"])
@@ -163,7 +176,7 @@ class TestANFISEngine(unittest.TestCase):
             self.assertGreater(cls["accuracy"], 0.85)
 
     def test_forward_trace_exact_consistency(self) -> None:
-        df = pd.read_csv(PROJECT_ROOT / "data" / "ispu_dki_all.csv")
+        df = pd.read_csv(PROJECT_ROOT / "data" / "ispu_indonesia.csv")
         split = prepare_train_test_data(df, POLLUTANT_ORDER, "ispu", test_size=0.2, random_state=42)
         model = ANFIS(
             n_inputs=6,
@@ -184,6 +197,52 @@ class TestANFISEngine(unittest.TestCase):
         ex = compute_worked_manual_example()
         self.assertAlmostEqual(ex["y_manual"], ex["y_engine"], places=9)
         self.assertAlmostEqual(float(np.sum(ex["w_bar"])), 1.0, places=9)
+
+    def test_dki_jakarta_dataset_and_subindex_mode(self) -> None:
+        csv_path = PROJECT_ROOT / "data" / "ispu_dki_all.csv"
+        self.assertTrue(csv_path.exists())
+        df = pd.read_csv(csv_path)
+        col_map = auto_map_columns(list(df.columns))
+        feature_cols = [col_map[p] for p in POLLUTANT_ORDER if col_map.get(p) in df.columns]
+        target_col = col_map.get("ispu")
+        self.assertEqual(target_col, "max")
+        self.assertEqual(len(feature_cols), 6)
+
+        clean_df, _ = validate_and_clean_dataframe(
+            df,
+            feature_cols=feature_cols,
+            target_col=target_col,
+            missing_strategy="drop",
+            clip_negative=True,
+        )
+        self.assertGreaterEqual(len(clean_df), 1000)
+        self.assertFalse(clean_df[[*feature_cols, target_col]].isna().any().any())
+        self.assertEqual(detect_input_mode(clean_df, feature_cols, target_col), "sub_index")
+
+        sub_check = compute_ispu_from_subindices({"pm10": 55.0, "pm25": 84.0, "co": 15.0})
+        self.assertAlmostEqual(sub_check["ispu"], 84.0)
+        self.assertEqual(sub_check["polutan_kritis"], "PM2.5")
+
+        split = prepare_train_test_data(clean_df, feature_cols, target_col, test_size=0.2, random_state=42)
+        lr = LinearRegression().fit(split["X_train"], split["y_train"])
+        lr_metrics = compute_regression_metrics(split["y_test"], lr.predict(split["X_test"]))
+
+        model = ANFIS(
+            n_inputs=6,
+            partition_type="grid",
+            n_mfs=2,
+            mf_type="gaussian",
+            epochs=35,
+            learning_rate=0.02,
+            l2_reg=1e-3,
+            random_state=42,
+            feature_names=feature_cols,
+        ).fit(split["X_train"], split["y_train"], split["X_test"], split["y_test"])
+
+        yp = model.predict(split["X_test"])
+        reg = compute_regression_metrics(split["y_test"], yp)
+        self.assertGreater(reg["R2"], 0.94)
+        self.assertLess(reg["RMSE"], lr_metrics["RMSE"])
 
 
 class TestStreamlitGUISmoke(unittest.TestCase):
@@ -219,6 +278,11 @@ class TestStreamlitGUISmoke(unittest.TestCase):
         predict_btn.click().run()
         self.assertEqual(len(at.exception), 0)
         self.assertEqual(len(at.error), 0)
+
+        preset_btn = next(b for b in at.button if "Jam Sibuk Perkotaan" in b.label)
+        preset_btn.click().run()
+        self.assertEqual(len(at.exception), 0)
+        self.assertAlmostEqual(float(at.number_input(key="manual_field_co").value), 15.0)
 
         # Uji interaktif Halaman 4: Trace setelah prediksi manual
         at.sidebar.radio(key="active_page").set_value("4. Hasil & Trace Layer 1–5").run()

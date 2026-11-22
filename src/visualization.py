@@ -261,6 +261,7 @@ def plot_membership_functions(
     feature_idx: int,
     scaler: MinMaxScalerCustom | None = None,
     show_initial: bool = True,
+    input_mode: str = "concentration",
 ) -> go.Figure:
     """Menampilkan kurva fungsi keanggotaan (MF) sebelum dan sesudah pelatihan ANFIS."""
     x_grid = np.linspace(0.0, 1.0, 220)
@@ -271,7 +272,10 @@ def plot_membership_functions(
     if scaler is not None and scaler.data_min_ is not None and scaler.data_range_ is not None:
         x_phys = x_grid * scaler.data_range_[feature_idx] + scaler.data_min_[feature_idx]
         x_axis_vals = x_phys
-        x_title = f"Konsentrasi {disp_name}"
+        if input_mode == "sub_index":
+            x_title = f"Sub-Indeks ISPU {spec['name'] if spec else feature_name}"
+        else:
+            x_title = f"Konsentrasi {disp_name}"
     else:
         x_axis_vals = x_grid
         x_title = f"{feature_name} (Ternormalisasi [0, 1])"

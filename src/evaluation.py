@@ -77,7 +77,7 @@ def train_baseline_models(
             "MLP Neural Network",
             MLPRegressor(
                 hidden_layer_sizes=(32, 16),
-                max_iter=600,
+                max_iter=1000,
                 early_stopping=True,
                 random_state=random_state,
             ),

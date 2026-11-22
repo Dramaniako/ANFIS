@@ -6,7 +6,12 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from src.ispu_standard import POLLUTANT_SPECS, classify_ispu, compute_ispu_official
+from src.ispu_standard import (
+    POLLUTANT_SPECS,
+    classify_ispu,
+    compute_ispu_from_subindices,
+    compute_ispu_official,
+)
 from src.visualization import plot_rule_contributions
 from ui.styles import render_ispu_badge
 
@@ -20,6 +25,8 @@ def render_page_results() -> None:
     )
 
     split_data = st.session_state["split_data"]
+    input_mode: str = st.session_state.get("input_mode", "concentration")
+    is_subindex = input_mode == "sub_index"
     model = st.session_state["anfis_model"]
     scaler = split_data["scaler"]
     feature_cols: list[str] = split_data["feature_cols"]
@@ -27,6 +34,11 @@ def render_page_results() -> None:
     X_test: np.ndarray = split_data["X_test"]
     y_test: np.ndarray = split_data["y_test"]
     y_pred_test: np.ndarray = st.session_state["y_pred_test"]
+
+    def _compute_ref_ispu(vals: dict[str, float]) -> dict | None:
+        if not vals:
+            return None
+        return compute_ispu_from_subindices(vals) if is_subindex else compute_ispu_official(vals)
 
     st.subheader("1. Pilih Sampel untuk Ditelusuri")
     source_mode = st.radio(
@@ -55,8 +67,7 @@ def render_page_results() -> None:
             for j, col in enumerate(feature_cols)
             if col.lower() in POLLUTANT_SPECS
         }
-        if official_vals:
-            official_info = compute_ispu_official(official_vals)
+        official_info = _compute_ref_ispu(official_vals)
     else:
         manual_res = st.session_state.get("last_manual_result")
         if manual_res is not None and manual_res.get("ok"):
@@ -70,9 +81,9 @@ def render_page_results() -> None:
                     float(
                         manual_dict.get(
                             col,
-                            POLLUTANT_SPECS[col.lower()]["default_value"]
-                            if col.lower() in POLLUTANT_SPECS
-                            else float(np.median(X_test_raw[:, j])),
+                            round(float(np.median(X_test_raw[:, j])), 1)
+                            if (is_subindex or col.lower() not in POLLUTANT_SPECS)
+                            else POLLUTANT_SPECS[col.lower()]["default_value"],
                         )
                     )
                     for j, col in enumerate(feature_cols)
@@ -85,7 +96,7 @@ def render_page_results() -> None:
                 for j, col in enumerate(feature_cols)
                 if col.lower() in POLLUTANT_SPECS
             }
-            official_info = compute_ispu_official(official_vals) if official_vals else None
+            official_info = _compute_ref_ispu(official_vals)
             st.info("Menampilkan trace untuk nilai input manual default (ubah nilai pada halaman 2. Input & Eksplorasi Data).")
 
     trace = model.forward_trace(x_scaled_1d=x_scaled, x_raw_1d=x_raw)
@@ -116,10 +127,11 @@ def render_page_results() -> None:
         norm_rows = []
         for j, col in enumerate(feature_cols):
             spec = POLLUTANT_SPECS.get(col.lower())
+            unit_str = "Sub-Indeks ISPU" if is_subindex else (spec["unit"] if spec else "-")
             norm_rows.append(
                 {
                     "Variabel": spec["name"] if spec else col,
-                    "Satuan": spec["unit"] if spec else "-",
+                    "Satuan": unit_str,
                     "Nilai Mentah (x)": float(x_raw[j]),
                     "Min Latih": float(scaler.data_min_[j]),
                     "Max Latih": float(scaler.data_max_[j]),

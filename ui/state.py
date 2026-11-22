@@ -20,10 +20,16 @@ from src.evaluation import (
 from src.ispu_standard import (
     POLLUTANT_ORDER,
     POLLUTANT_SPECS,
+    compute_ispu_from_subindices,
     compute_ispu_official,
     validate_manual_input,
 )
-from src.preprocessing import prepare_train_test_data, validate_and_clean_dataframe
+from src.preprocessing import (
+    auto_map_columns,
+    detect_input_mode,
+    prepare_train_test_data,
+    validate_and_clean_dataframe,
+)
 
 DEFAULT_DATASET_PATH = Path(__file__).resolve().parents[1] / "data" / "ispu_dki_all.csv"
 
@@ -99,6 +105,7 @@ def execute_training_pipeline(
         split_data["y_test"],
         random_state=random_state,
     )
+    input_mode = detect_input_mode(df_clean, feature_cols, target_col)
 
     return {
         "split_data": split_data,
@@ -110,6 +117,7 @@ def execute_training_pipeline(
         "test_metrics": test_metrics,
         "test_cls_metrics": test_cls_metrics,
         "baseline_results": baseline_results,
+        "input_mode": input_mode,
     }
 
 
@@ -117,17 +125,29 @@ def execute_training_pipeline(
 def build_initial_bundle() -> dict[str, Any]:
     """Membangun state awal ter-cache agar aplikasi siap langsung digunakan saat dibuka."""
     df_raw = load_default_dataframe()
+    col_map = auto_map_columns(list(df_raw.columns))
+    feature_cols = [col_map[p] for p in POLLUTANT_ORDER if col_map.get(p) in df_raw.columns]
+    target_col = "ispu" if "ispu" in df_raw.columns else col_map.get("ispu")
+
+    if not target_col or target_col not in df_raw.columns or len(feature_cols) < 2:
+        raise ValueError(
+            "Dataset bawaan tidak memiliki minimal 2 kolom polutan dan kolom target ISPU ('ispu' atau 'max')."
+        )
+
+    max_missing_frac = float(df_raw[feature_cols].isna().mean().max())
+    missing_strategy = "drop" if max_missing_frac > 0.20 else "median"
+
     df_clean, clean_report = validate_and_clean_dataframe(
         df_raw,
-        feature_cols=POLLUTANT_ORDER,
-        target_col="ispu",
-        missing_strategy="median",
+        feature_cols=feature_cols,
+        target_col=target_col,
+        missing_strategy=missing_strategy,
         clip_negative=True,
     )
     trained = execute_training_pipeline(
         df_clean=df_clean,
-        feature_cols=POLLUTANT_ORDER,
-        target_col="ispu",
+        feature_cols=feature_cols,
+        target_col=target_col,
         test_size=0.2,
         partition_type="grid",
         n_mfs=2,
@@ -142,27 +162,34 @@ def build_initial_bundle() -> dict[str, Any]:
         "df_raw": df_raw,
         "df_clean": df_clean,
         "clean_report": clean_report,
-        "data_source_name": "Dataset Bawaan (ispu_dki_all.csv)",
+        "data_source_name": f"Dataset Bawaan ({DEFAULT_DATASET_PATH.name})",
         **trained,
     }
 
 
 def apply_bundle_to_session(bundle: dict[str, Any]) -> None:
     """Menyimpan hasil pipeline ke st.session_state serta menyinkronkan input manual."""
+    prev_mode = st.session_state.get("input_mode")
     for key, val in bundle.items():
         st.session_state[key] = val
+
+    input_mode = bundle.get("input_mode", st.session_state.get("input_mode", "concentration"))
+    mode_changed = prev_mode is not None and prev_mode != input_mode
 
     feature_cols: list[str] = bundle["split_data"]["feature_cols"]
     current_manual = st.session_state.get("manual_inputs", {})
     synced_manual: dict[str, float] = {}
     X_train_raw = bundle["split_data"]["X_train_raw"]
     for j, col in enumerate(feature_cols):
-        if col in current_manual:
-            synced_manual[col] = float(current_manual[col])
-        elif col.lower() in POLLUTANT_SPECS:
-            synced_manual[col] = float(POLLUTANT_SPECS[col.lower()]["default_value"])
+        if not mode_changed and col in current_manual:
+            val = float(current_manual[col])
+        elif input_mode == "sub_index" or col.lower() not in POLLUTANT_SPECS:
+            val = round(float(np.median(X_train_raw[:, j])), 1)
         else:
-            synced_manual[col] = float(np.median(X_train_raw[:, j]))
+            val = float(POLLUTANT_SPECS[col.lower()]["default_value"])
+        synced_manual[col] = val
+        if mode_changed:
+            st.session_state[f"manual_field_{col}"] = val
     st.session_state["manual_inputs"] = synced_manual
 
 
@@ -179,12 +206,17 @@ def run_manual_prediction(raw_values: dict[str, Any]) -> dict[str, Any]:
     """Memvalidasi masukan manual dan menjalankan inferensi ANFIS + pembanding KLHK resmi."""
     split_data = st.session_state["split_data"]
     model: ANFIS = st.session_state["anfis_model"]
+    input_mode: str = st.session_state.get("input_mode", "concentration")
     feature_cols: list[str] = split_data["feature_cols"]
     feature_bounds: dict[str, tuple[float, float]] = split_data["feature_bounds"]
     scaler = split_data["scaler"]
 
     ordered_inputs = {col: raw_values.get(col) for col in feature_cols}
-    errors, warnings = validate_manual_input(ordered_inputs, feature_bounds=feature_bounds)
+    errors, warnings = validate_manual_input(
+        ordered_inputs,
+        feature_bounds=feature_bounds,
+        input_mode=input_mode,
+    )
     if errors:
         return {"ok": False, "errors": errors, "warnings": warnings}
 
@@ -197,7 +229,14 @@ def run_manual_prediction(raw_values: dict[str, Any]) -> dict[str, Any]:
         for col in feature_cols
         if col.lower() in POLLUTANT_SPECS
     }
-    official = compute_ispu_official(official_vals) if official_vals else None
+    if official_vals:
+        official = (
+            compute_ispu_from_subindices(official_vals)
+            if input_mode == "sub_index"
+            else compute_ispu_official(official_vals)
+        )
+    else:
+        official = None
 
     result = {
         "ok": True,
