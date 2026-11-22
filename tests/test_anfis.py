@@ -284,6 +284,21 @@ class TestStreamlitGUISmoke(unittest.TestCase):
         self.assertEqual(len(at.exception), 0)
         self.assertAlmostEqual(float(at.number_input(key="manual_field_co").value), 15.0)
 
+        # Uji pergantian dataset default via sidebar: ke ispu_indonesia.csv (concentration)
+        self.assertEqual(at.session_state["input_mode"], "sub_index")
+        at.sidebar.selectbox(key="sidebar_dataset_selector").set_value("ispu_indonesia.csv").run()
+        self.assertEqual(len(at.exception), 0)
+        self.assertEqual(at.session_state["input_mode"], "concentration")
+        preset_btn = next(b for b in at.button if "Jam Sibuk Perkotaan" in b.label)
+        preset_btn.click().run()
+        self.assertEqual(len(at.exception), 0)
+        self.assertAlmostEqual(float(at.number_input(key="manual_field_co").value), 5800.0)
+
+        # Kembalikan ke ispu_dki_all.csv (sub_index)
+        at.sidebar.selectbox(key="sidebar_dataset_selector").set_value("ispu_dki_all.csv").run()
+        self.assertEqual(len(at.exception), 0)
+        self.assertEqual(at.session_state["input_mode"], "sub_index")
+
         # Uji interaktif Halaman 4: Trace setelah prediksi manual
         at.sidebar.radio(key="active_page").set_value("4. Hasil & Trace Layer 1–5").run()
         at.radio[0].set_value("Input Manual Terakhir").run()

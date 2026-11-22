@@ -31,17 +31,77 @@ from src.preprocessing import (
     validate_and_clean_dataframe,
 )
 
-DEFAULT_DATASET_PATH = Path(__file__).resolve().parents[1] / "data" / "ispu_dki_all.csv"
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+
+_CURATED_DATASETS: dict[str, dict[str, str]] = {
+    "ispu_dki_all.csv": {
+        "label": "ISPU DKI Jakarta — Data Riil Kaggle (ispu_dki_all.csv)",
+        "short_label": "DKI Jakarta (ispu_dki_all.csv)",
+        "description": (
+            "Data historis SPKU DKI Jakarta dari Satu Data Jakarta / Kaggle "
+            "(skala Sub-Indeks ISPU, 1.261 baris lengkap 2021–2025)."
+        ),
+    },
+    "ispu_indonesia.csv": {
+        "label": "ISPU Indonesia Terkalibrasi — Permen LHK (ispu_indonesia.csv)",
+        "short_label": "ISPU Terkalibrasi (ispu_indonesia.csv)",
+        "description": (
+            "Dataset terkalibrasi berbasis konsentrasi ambien (µg/m³) "
+            "Permen LHK No. 14/2020 dengan 5 kategori lengkap (1.200 baris)."
+        ),
+    },
+}
+
+
+def get_available_builtin_datasets() -> dict[str, dict[str, Any]]:
+    """Mengembalikan daftar dataset bawaan yang tersedia di direktori data/."""
+    datasets: dict[str, dict[str, Any]] = {}
+
+    for key, meta in _CURATED_DATASETS.items():
+        path = DATA_DIR / key
+        if path.exists() or key == "ispu_indonesia.csv":
+            datasets[key] = {**meta, "path": path}
+
+    if DATA_DIR.exists():
+        for csv_path in sorted(DATA_DIR.glob("*.csv")):
+            if csv_path.name not in datasets:
+                datasets[csv_path.name] = {
+                    "label": f"Dataset Lokal ({csv_path.name})",
+                    "short_label": csv_path.name,
+                    "description": f"File CSV lokal di folder data/{csv_path.name}.",
+                    "path": csv_path,
+                }
+    return datasets
+
+
+DEFAULT_DATASET_KEY: str = (
+    "ispu_dki_all.csv" if (DATA_DIR / "ispu_dki_all.csv").exists() else "ispu_indonesia.csv"
+)
+DEFAULT_DATASET_PATH = DATA_DIR / DEFAULT_DATASET_KEY
+
+
+def load_builtin_dataframe(dataset_key: str = DEFAULT_DATASET_KEY) -> pd.DataFrame:
+    """Memuat dataset bawaan sesuai pilihan pengguna (membuat ulang jika ispu_indonesia belum ada)."""
+    datasets = get_available_builtin_datasets()
+    if dataset_key not in datasets:
+        raise ValueError(f"Dataset bawaan '{dataset_key}' tidak ditemukan.")
+
+    target_path: Path = datasets[dataset_key]["path"]
+    if target_path.exists():
+        return pd.read_csv(target_path)
+
+    if dataset_key == "ispu_indonesia.csv":
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        df = generate_ispu_dataset(n_samples=1200, seed=42)
+        df.to_csv(target_path, index=False)
+        return df
+
+    raise FileNotFoundError(f"File dataset tidak ditemukan: {target_path}")
 
 
 def load_default_dataframe() -> pd.DataFrame:
-    """Memuat dataset bawaan ISPU Indonesia (atau membuatnya ulang jika belum ada)."""
-    if DEFAULT_DATASET_PATH.exists():
-        return pd.read_csv(DEFAULT_DATASET_PATH)
-    DEFAULT_DATASET_PATH.parent.mkdir(parents=True, exist_ok=True)
-    df = generate_ispu_dataset(n_samples=1200, seed=42)
-    df.to_csv(DEFAULT_DATASET_PATH, index=False)
-    return df
+    """Memuat dataset bawaan default saat aplikasi pertama dijalankan."""
+    return load_builtin_dataframe(DEFAULT_DATASET_KEY)
 
 
 def execute_training_pipeline(
@@ -121,17 +181,17 @@ def execute_training_pipeline(
     }
 
 
-@st.cache_resource(show_spinner="Menyiapkan model awal ANFIS pada dataset ISPU Indonesia...")
-def build_initial_bundle() -> dict[str, Any]:
-    """Membangun state awal ter-cache agar aplikasi siap langsung digunakan saat dibuka."""
-    df_raw = load_default_dataframe()
+@st.cache_resource(show_spinner="Menyiapkan model awal ANFIS pada dataset bawaan...")
+def build_initial_bundle(dataset_key: str = DEFAULT_DATASET_KEY) -> dict[str, Any]:
+    """Membangun state awal ter-cache untuk dataset bawaan terpilih."""
+    df_raw = load_builtin_dataframe(dataset_key)
     col_map = auto_map_columns(list(df_raw.columns))
     feature_cols = [col_map[p] for p in POLLUTANT_ORDER if col_map.get(p) in df_raw.columns]
     target_col = "ispu" if "ispu" in df_raw.columns else col_map.get("ispu")
 
     if not target_col or target_col not in df_raw.columns or len(feature_cols) < 2:
         raise ValueError(
-            "Dataset bawaan tidak memiliki minimal 2 kolom polutan dan kolom target ISPU ('ispu' atau 'max')."
+            f"Dataset '{dataset_key}' tidak memiliki minimal 2 kolom polutan dan kolom target ISPU ('ispu' atau 'max')."
         )
 
     max_missing_frac = float(df_raw[feature_cols].isna().mean().max())
@@ -162,7 +222,8 @@ def build_initial_bundle() -> dict[str, Any]:
         "df_raw": df_raw,
         "df_clean": df_clean,
         "clean_report": clean_report,
-        "data_source_name": f"Dataset Bawaan ({DEFAULT_DATASET_PATH.name})",
+        "data_source_name": f"Dataset Bawaan ({dataset_key})",
+        "active_dataset_key": dataset_key,
         **trained,
     }
 
@@ -170,33 +231,49 @@ def build_initial_bundle() -> dict[str, Any]:
 def apply_bundle_to_session(bundle: dict[str, Any]) -> None:
     """Menyimpan hasil pipeline ke st.session_state serta menyinkronkan input manual."""
     prev_mode = st.session_state.get("input_mode")
+    prev_source = st.session_state.get("data_source_name")
     for key, val in bundle.items():
         st.session_state[key] = val
 
     input_mode = bundle.get("input_mode", st.session_state.get("input_mode", "concentration"))
-    mode_changed = prev_mode is not None and prev_mode != input_mode
+    new_source = bundle.get("data_source_name")
+    reset_manual = (prev_mode is not None and prev_mode != input_mode) or (
+        new_source is not None and prev_source is not None and prev_source != new_source
+    )
 
     feature_cols: list[str] = bundle["split_data"]["feature_cols"]
     current_manual = st.session_state.get("manual_inputs", {})
     synced_manual: dict[str, float] = {}
     X_train_raw = bundle["split_data"]["X_train_raw"]
     for j, col in enumerate(feature_cols):
-        if not mode_changed and col in current_manual:
+        if not reset_manual and col in current_manual:
             val = float(current_manual[col])
         elif input_mode == "sub_index" or col.lower() not in POLLUTANT_SPECS:
             val = round(float(np.median(X_train_raw[:, j])), 1)
         else:
             val = float(POLLUTANT_SPECS[col.lower()]["default_value"])
         synced_manual[col] = val
-        if mode_changed:
+        if reset_manual:
             st.session_state[f"manual_field_{col}"] = val
     st.session_state["manual_inputs"] = synced_manual
+
+
+def switch_builtin_dataset(dataset_key: str) -> None:
+    """Mengganti dataset bawaan aktif dan memperbarui model ANFIS dari cache."""
+    datasets = get_available_builtin_datasets()
+    if dataset_key not in datasets:
+        raise ValueError(f"Dataset bawaan '{dataset_key}' tidak tersedia.")
+    bundle = build_initial_bundle(dataset_key)
+    apply_bundle_to_session(bundle)
+    st.session_state["active_dataset_key"] = dataset_key
+    st.session_state["last_manual_result"] = None
 
 
 def initialize_session_state() -> None:
     """Memastikan seluruh kunci session_state tersedia sejak halaman pertama dimuat."""
     if "anfis_model" not in st.session_state:
-        bundle = build_initial_bundle()
+        st.session_state.setdefault("active_dataset_key", DEFAULT_DATASET_KEY)
+        bundle = build_initial_bundle(DEFAULT_DATASET_KEY)
         apply_bundle_to_session(bundle)
         st.session_state.setdefault("last_manual_result", None)
         st.session_state.setdefault("active_page", "1. Beranda")

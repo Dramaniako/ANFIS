@@ -14,7 +14,13 @@ from src.ispu_standard import (
 )
 from src.preprocessing import auto_map_columns, validate_and_clean_dataframe
 from src.visualization import plot_data_exploration_categories, plot_data_exploration_corr
-from ui.state import apply_bundle_to_session, execute_training_pipeline, run_manual_prediction
+from ui.state import (
+    apply_bundle_to_session,
+    execute_training_pipeline,
+    get_available_builtin_datasets,
+    run_manual_prediction,
+    switch_builtin_dataset,
+)
 from ui.styles import render_ispu_badge
 
 
@@ -47,7 +53,42 @@ def _render_dataset_tab() -> None:
     split_data = st.session_state["split_data"]
     clean_report = st.session_state["clean_report"]
 
-    st.subheader("1. Unggah Dataset CSV Kustom (Opsional)")
+    st.subheader("1. Pilih Dataset Bawaan")
+    builtin_datasets = get_available_builtin_datasets()
+    ds_keys = list(builtin_datasets.keys())
+    active_ds_key = st.session_state.get("active_dataset_key", ds_keys[0])
+
+    if active_ds_key in ds_keys and (
+        "page_builtin_dataset_select" not in st.session_state
+        or st.session_state.get("_last_synced_page_ds") != active_ds_key
+    ):
+        st.session_state["page_builtin_dataset_select"] = active_ds_key
+        st.session_state["_last_synced_page_ds"] = active_ds_key
+
+    col_ds1, col_ds2 = st.columns([2.2, 1.0], vertical_alignment="bottom")
+    with col_ds1:
+        chosen_builtin = st.selectbox(
+            "Dataset Bawaan Tersedia di Folder data/",
+            options=ds_keys,
+            format_func=lambda k: builtin_datasets[k]["label"],
+            key="page_builtin_dataset_select",
+        )
+    with col_ds2:
+        is_already_active = chosen_builtin == active_ds_key
+        if st.button(
+            "Gunakan Dataset Bawaan Ini",
+            type="primary",
+            disabled=is_already_active,
+            width="stretch",
+        ):
+            switch_builtin_dataset(chosen_builtin)
+            st.session_state["_sync_sidebar_dataset"] = chosen_builtin
+            st.session_state["_last_synced_page_ds"] = chosen_builtin
+            st.rerun()
+
+    st.caption(builtin_datasets[chosen_builtin]["description"])
+
+    st.subheader("2. Unggah Dataset CSV Kustom (Opsional)")
     with st.expander("Unggah CSV baru atau ganti pemetaan kolom dataset", expanded=False):
         uploaded_file = st.file_uploader(
             "Pilih file CSV kualitas udara (harus memiliki kolom polutan dan kolom target skor ISPU/AQI)",
@@ -124,9 +165,11 @@ def _render_dataset_tab() -> None:
                                 "df_clean": cleaned,
                                 "clean_report": rep,
                                 "data_source_name": f"CSV Unggahan ({uploaded_file.name})",
+                                "active_dataset_key": "custom_upload",
                                 **trained,
                             }
                         )
+                        st.session_state["_sync_sidebar_dataset"] = "custom_upload"
                         st.session_state["last_manual_result"] = None
                         st.success(
                             f"Dataset '{uploaded_file.name}' divalidasi ({len(cleaned)} baris bersih) dan model ANFIS selesai dilatih!"
@@ -137,7 +180,7 @@ def _render_dataset_tab() -> None:
             except Exception as exc:
                 st.error(f"Gagal membaca file CSV: {exc}")
 
-    st.subheader("2. Ringkasan Dataset Aktif")
+    st.subheader("3. Ringkasan Dataset Aktif")
     if st.session_state.get("input_mode") == "sub_index":
         st.info(
             "Dataset aktif terdeteksi menggunakan skala **Sub-Indeks ISPU** per polutan "
@@ -178,7 +221,7 @@ def _render_dataset_tab() -> None:
         st.dataframe(pd.DataFrame(spec_rows), width="stretch", hide_index=True)
         st.caption(f"Breakpoint Nilai Indeks ISPU resmi: {', '.join(str(int(x)) for x in ISPU_BREAKPOINTS)}.")
 
-    st.subheader("3. Visualisasi Eksplorasi Data")
+    st.subheader("4. Visualisasi Eksplorasi Data")
     v1, v2 = st.columns(2)
     with v1:
         st.plotly_chart(
